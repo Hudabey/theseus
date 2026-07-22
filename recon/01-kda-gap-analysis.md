@@ -21,11 +21,11 @@ in `vendor/llama.cpp`:
 
 - The core op `ggml_gated_delta_net` already has a **first-class per-channel (KDA) gate mode**,
   documented in the header and supported by **every backend** (CPU, CUDA, Metal, Vulkan, SYCL,
-  OpenCL, WebGPU, Hexagon, OpenVINO, ggml-et) — `vendor/llama.cpp/ggml/include/ggml.h:2569`,
+  OpenCL, WebGPU, Hexagon, OpenVINO, ggml-et) — [`vendor/llama.cpp/ggml/include/ggml.h:2569`](https://github.com/ggml-org/llama.cpp/blob/1a064ab0921238c1daa397d6f4a900ef33884de2/ggml/include/ggml.h#L2569),
   `vendor/llama.cpp/ggml/src/ggml.c:6284-6286`.
 - A complete `LLM_ARCH_KIMI_LINEAR` graph runs KDA end-to-end (per-channel gate, L2-norm,
-  `-exp(A_log)` decay, sigmoid β, sigmoid output gate) — `vendor/llama.cpp/src/models/kimi-linear.cpp:288-373`.
-- A converter exists — `vendor/llama.cpp/conversion/kimi_linear.py:15,175-176`.
+  `-exp(A_log)` decay, sigmoid β, sigmoid output gate) — [`vendor/llama.cpp/src/models/kimi-linear.cpp:288-373`](https://github.com/ggml-org/llama.cpp/blob/1a064ab0921238c1daa397d6f4a900ef33884de2/src/models/kimi-linear.cpp#L288-L373).
+- A converter exists — [`vendor/llama.cpp/conversion/kimi_linear.py:15,175-176`](https://github.com/ggml-org/llama.cpp/blob/1a064ab0921238c1daa397d6f4a900ef33884de2/conversion/kimi_linear.py#L175-L176).
 
 So for mainline, KDA itself is **not** the gap. The real K3 gaps are: **(a) Attention
 Residuals** (absent from both repos — a genuinely new mechanism), **(b) a new K3 arch +
@@ -66,7 +66,7 @@ Paper Eq. 1 (`vendor/kimi-linear/tech_report.pdf` p.4):
     S_t = (I − β_t k_t k_tᵀ) Diag(α_t) S_{t−1} + β_t k_t v_tᵀ ;   o_t = S_tᵀ q_t
 
 `Diag(α_t)` is a **per-channel** diagonal gate (one decay value per key-channel), vs GDN's
-scalar `α_t`. fla naive reference (`vendor/fla/fla/ops/kda/naive.py:59-63`), verbatim:
+scalar `α_t`. fla naive reference ([`vendor/fla/fla/ops/kda/naive.py:59-63`](https://github.com/fla-org/flash-linear-attention/blob/d1ce07369d581813553f30a750af3b6b5f9af6a9/fla/ops/kda/naive.py#L59-L63)), verbatim:
 
 ```python
 S = S * g_i[..., None].exp()                                              # per-channel decay
@@ -172,7 +172,8 @@ Framed for the **K3 target**, primarily against mainline (the viable base).
 
 - **The delta-net op and all its backend kernels.** `ggml_gated_delta_net` already does the KDA
   per-channel recurrence on every backend (`ggml.c:6255-6309`; CPU `ops.cpp:10831-10872`; matrix
-  in §3). If K3's KDA is numerically identical to Kimi-Linear's, **zero kernel work**.
+  in §3). If K3's KDA is numerically identical to Kimi-Linear's, these **may be reusable with
+  little or no recurrence-kernel work — provided K3 matches the supported shapes and conventions**.
 - **The KDA graph primitives** `build_delta_net` / `_chunking` / `_autoregressive` / `_fused`
   (`src/models/delta-net-base.cpp:16-447`) — chunk size 16, per-channel decay mask, L2-norm on
   q/k, `-exp(A_log)` decay, sigmoid β/output-gate.
@@ -201,9 +202,9 @@ Framed for the **K3 target**, primarily against mainline (the viable base).
 
 ### Missing entirely (must be built)
 
-- **Attention Residuals.** Nothing in either repo. In fla this is `fla/ops/attnres/` (a depth-axis
+- **Attention Residuals.** Nothing in either repo. In fla this is [`fla/ops/attnres/`](https://github.com/fla-org/flash-linear-attention/blob/d1ce07369d581813553f30a750af3b6b5f9af6a9/fla/ops/attnres/naive.py#L56-L75) (a depth-axis
   softmax over RMS-normed residual sources: `naive.py:56-75`) wired into the KDA model block
-  (`fla/models/kda/modeling_kda.py:88-167`), **not** a standard residual add. This is the single
+  ([`fla/models/kda/modeling_kda.py:88-167`](https://github.com/fla-org/flash-linear-attention/blob/d1ce07369d581813553f30a750af3b6b5f9af6a9/fla/models/kda/modeling_kda.py#L88-L167)), **not** a standard residual add. This is the single
   largest net-new C/GGML piece: a new op (or a graph-composed equivalent) plus new tensors
   (`attn_res_proj`, `attn_res_norm`, …) plus converter support. **Note:** the paper this is named
   after (fla's `attnres`) is a Kimi-Linear-era construct; whether K3 uses exactly this is an open
@@ -239,7 +240,7 @@ Ordered roughly by dependency.
 | 9 | gguf-py constants/tensor-mapping for K3 | `gguf-py/gguf/constants.py`, `tensor_mapping.py` | **S** | Clone Kimi-Linear block `constants.py:4392-4432`, `tensor_mapping.py:893-912`. |
 | 10 | End-to-end validation vs fla reference | new test | **M** | Compare against `fla` naive/`chunk_kda` on real K3 weights. |
 
-Net: if #1 confirms KDA is unchanged, the delta-net **kernels are free**; the real cost
+Net: if #1 confirms KDA is unchanged, the delta-net **kernel work may be near zero**; the real cost
 concentrates in **#5 (Attention Residuals, L)** and **#8 (MXFP4 passthrough, L)**, with the rest
 being arch-registration and converter cloning.
 
@@ -250,7 +251,7 @@ being arch-registration and converter cloning.
 1. **Does K3's KDA differ numerically from Kimi-Linear's KDA?** Chunk size 16, sigmoid output
    gate, sigmoid β, `-exp(A_log)` per-channel decay, `head_dim=128` — are these identical for
    K3, letting `ggml_gated_delta_net` and `build_delta_net` be reused verbatim? (Gates §5.) Not
-   determinable until weights/config drop July 27.
+   determinable until the weights/config release (announced for July 27).
 2. **What exactly are K3's "Attention Residuals," and where do they attach?** fla's `attnres`
    (depth-axis softmax over RMS-normed residual sources, `fla/ops/attnres/naive.py:56-75`, wired
    in `fla/models/kda/modeling_kda.py:88-167`) is the closest reference, but CLAUDE.md's phrasing

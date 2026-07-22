@@ -1,4 +1,4 @@
-# 06 — Drop-day runbook (K3 weights release, ~July 27)
+# 06 — Drop-day runbook (K3 weights release, announced for July 27)
 
 Ordered hour-zero checklist. Principle: **small files before big ones** — modeling code
 and config define everything; the 2.8T weights come last, and most decisions need zero
@@ -24,7 +24,8 @@ and BF16/F32 range-request pulls printed correct non-zero norms
 ```bash
 export REPO=moonshotai/Kimi-K3       # ← placeholder; fix to the real repo id first thing
 export PY=python3                    # a python with huggingface_hub/safetensors/requests/numpy
-export WORK=$PWD/drop-scratch        # scratch for pulled files; not committed
+export WORK="${XDG_CACHE_HOME:-$HOME/.cache}/theseus-k3-drop"  # outside any repo: pulled
+                                     # files must never be committable by accident
 mkdir -p $WORK && cd $WORK
 # if gated: export HF_TOKEN=...
 ```
@@ -52,8 +53,11 @@ completes so the timeline is in git.
 
 ```bash
 $PY tools/drop_day/watch_release.py --interval 180
-# polls the moonshotai HF org; rings the bell and prints `export REPO=...` on match.
-# Baseline as of 2026-07-22: 18 repos, none matching /k3/i.
+# polls the moonshotai HF org. Alerts on ANY of: a new repo id matching /k3/i, a
+# revision-SHA change on a matching repo, config.json appearing, or
+# model.safetensors.index.json appearing — a repo created empty (or flipped
+# private→public) and populated later must still trigger. Honors HF_TOKEN.
+# Rings the bell and prints `export REPO=...`. Baseline 2026-07-22: 18 repos, no match.
 ```
 
 ### 0c. Completeness gate — do NOT start Step 1 against a partial upload
@@ -96,10 +100,10 @@ jq . $WORK/repo/config.json | tee $WORK/config-pretty.json
 |---|---|---|
 | **SiTU** | `hidden_act` / `moe_act` / anything ≠ `silu`; `quantization_config`; then grep modeling code (1c) for the formula | 05-OQ1 |
 | **MoE structure** | `n_routed_experts` (=896?), `num_experts_per_tok` (=16?), `n_shared_experts`, `moe_intermediate_size`, anything named `latent`/`stable` | 05-OQ2 |
-| **AttnRes** | `attnres_block_size` (fla name, `configuration_kda.py:48`) or any `*res*`/`*residual*` key; value `1` = full mode, even N = block mode (recon 04 §3) | 04-OQ2, 05-OQ4 |
+| **AttnRes** | `attnres_block_size` (fla name, [`configuration_kda.py:48`](https://github.com/fla-org/flash-linear-attention/blob/d1ce07369d581813553f30a750af3b6b5f9af6a9/fla/models/kda/configuration_kda.py#L48)) or any `*res*`/`*residual*` key; value `1` = full mode, even N = block mode (recon 04 §3, fla semantics) | 04-OQ2, 05-OQ4 |
 | **Layer semantics** | `num_hidden_layers` (=93? decoder-only?), `layer_types` list vs `full_attention_interval`-style key, MLA placement offset (93 mod 4 ≠ 0 — recon 05 A12) | 01-OQ4, 05-OQ3 |
 | **MLA gate** | MLA keys (`q_lora_rank`, `kv_lora_rank`, `qk_rope_head_dim`…) + any `attn_gate`/`gate_proj`-adjacent key on the attention config | 05-OQ5 |
-| **KDA numerics vs Kimi-Linear** | `head_dim` (128?), `num_heads`, `num_v_heads` (GVA?), `conv_size` (4?), `allow_neg_eigval`, `safe_gate`/`lower_bound`, chunk size if exposed | 01-OQ1 — **gates whether all delta-net kernel work is zero** |
+| **KDA numerics vs Kimi-Linear** | `head_dim` (128?), `num_heads`, `num_v_heads` (GVA?), `conv_size` (4?), `allow_neg_eigval`, `safe_gate`/`lower_bound`, chunk size if exposed | 01-OQ1 — gates how much delta-net kernel work remains |
 | **All norm eps** | `rms_norm_eps` / `norm_eps` — recon 04 assumes one shared eps for AttnRes key-norm and folded norm (`modeling_kda.py:91,140`) | 04-OQ8 |
 | **Vocab/context** | `vocab_size`, `max_position_embeddings` (1M?), `rope_theta` for MLA layers | GGUF metadata |
 
@@ -186,12 +190,15 @@ $PY tools/drop_day/classify_tensors.py tensors.json
 ```
 
 Buckets (first match wins): `attnres` (recon 04 §4 names), `kda`
-(`conversion/kimi_linear.py:158-179` names), `mla`, `moe`, `mlp`, `norms`, `embed`,
+([`conversion/kimi_linear.py:158-179`](https://github.com/ggml-org/llama.cpp/blob/1a064ab0921238c1daa397d6f4a900ef33884de2/conversion/kimi_linear.py#L158-L179) names), `mla`, `moe`, `mlp`, `norms`, `embed`,
 `vision`; everything else lands in `unmatched.json`. The patterns are validated
-against real Moonshot naming — the Kimi-Linear rehearsal bucketed all 20,493 tensors
-with zero unmatched — so on K3, **whatever lands in `unmatched.json` is new
-architecture** (SiTU, LatentMoE structure, the MLA gate, or something unpredicted).
-Copy the unmatched list into FINDINGS.md as evidence rows.
+against real Moonshot naming (the Kimi-Linear rehearsal bucketed all 20,493 tensors
+with zero unmatched), but treat `unmatched.json` as the **first discovery queue, not
+proof of new architecture**: renamed ordinary tensors land there too, and genuinely
+new tensors can be swallowed by the broad buckets (`gate`, `norm`, `experts` match a
+lot). After triaging unmatched, **audit every matched bucket** for unexpected names,
+per-layer counts, shapes, and dtypes before declaring the inventory understood. Copy
+the unmatched list and any bucket anomalies into FINDINGS.md as evidence rows.
 
 Then targeted checks:
 
@@ -324,8 +331,9 @@ Each finding → what it unblocks / which contingency fires.
   loudly; L, and it gates everything downstream of the converter.
 
 **D7 — KDA numerics** (1b config vs Kimi-Linear; closes 01-OQ1)
-- Identical (head_dim 128, conv 4, sigmoid gates, `-exp(A_log)`) → **zero kernel
-  work**, `ggml_gated_delta_net` reused verbatim (recon 01 §4).
+- Identical (head_dim 128, conv 4, sigmoid gates, `-exp(A_log)`) → existing kernels
+  **may be reusable with little or no recurrence-kernel work**, `ggml_gated_delta_net`
+  reused if K3 matches the supported shapes and conventions (recon 01 §4).
 - Any divergence (GVA `num_v_heads≠num_heads`, different chunk/conv, safe_gate) →
   check the existing op's parameter surface first (`ggml.h:2569`) — most variants are
   flags, not new kernels; escalate only if the recurrence itself changed.

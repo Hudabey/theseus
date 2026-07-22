@@ -4,7 +4,7 @@ Source: https://vllm.ai/blog/2026-07-22-kimi-k3-preview ("A Preview of Productio
 Kimi K3 Support on vLLM", published 2026-07-22), fetched raw 2026-07-22. All quotes are
 verbatim from the page text. Purpose: this doc is the **filter for claims from other
 analyses** — anything an external analysis asserts about K3 that is not in the
-"stated" column below is speculation until the July 27 weights drop.
+"stated" column below is speculation until the weights release (announced by July 27).
 
 Legend: **[V]** = stated by the vLLM post (quote given). **[D]** = derivable from a [V]
 fact by arithmetic/close reading — flagged, since the derivation can be wrong.
@@ -65,10 +65,10 @@ zero hits for `SiTU` in all four vendor repos (`vendor/fla`, `vendor/llama.cpp`,
 `vendor/ik_llama.cpp`, `vendor/kimi-linear`; grep 2026-07-22) — it is not an existing
 fla/ggml concept under that name.
 
-What we *can* safely take from it: (a) the expert activation is **not** plain
-SwiGLU/SiLU, otherwise TRTLLM-Gen would not have "not supported" it; (b) it carries
-*parameters* of some kind that a serving engine must map per expert path. Both matter
-for the GGUF converter and graph (see §5).
+What the post supports saying: SiTU is an activation with parameters that vLLM maps
+into its optimized FP4 expert path. Its formula, its parameter granularity, and its
+relation to GLU-family activations are all **unstated** — §5 treats it strictly as an
+unknown for the GGUF converter and graph.
 
 ## 4. Serving/infra facts (context for claims, not port targets)
 
@@ -105,9 +105,10 @@ for the GGUF converter and graph (see §5).
    enough to keep building on recon 04 as the working model. Block size and tensor
    inventory still gate the converter.
 4. **New gap, absent from recon 01's change list: SiTU.** ggml MoE expert activation
-   is currently a fixed op choice (SiLU/GELU family); a parametric activation means a
-   new ggml op (or graph composition) + new GGUF tensors/metadata + converter support.
-   Until defined, budget it as unknown-M/L.
+   is currently a fixed op choice (SiLU/GELU family); an activation with parameters
+   **may require a new op, or may compose from existing ops plus scalar metadata** —
+   the released formula decides, and it also decides the converter/GGUF impact.
+   Until defined, budget it as unknown.
 5. **New unknown: "Stable LatentMoE".** If K3's MoE routing/latent structure deviates
    from standard routed-experts (the name suggests it might), recon 01's assumption
    that MoE is conversion-only work is at risk. Nothing more can be said from this

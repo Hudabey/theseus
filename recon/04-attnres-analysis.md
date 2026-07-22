@@ -15,11 +15,16 @@ exists in `fla/models/abc/modeling_abc.py:88-167` — the mechanism is model-agn
 nothing about it is KDA-specific. `vendor/kimi-linear` contains **zero** attnres
 references (grep clean), so fla is the only code-level ground truth until K3 drops.
 
+> **Scope.** Every claim in this doc describes **fla's reference implementation** —
+> the wiring, the tensors, the caching behavior, the block arithmetic. Whether K3
+> follows any of it is checkpoint-dependent; the Open questions section is the list
+> of what transfers only after verification.
+
 ---
 
 ## TL;DR
 
-AttnRes replaces the **read** of the residual stream, not the write. At each sub-layer,
+In fla's wiring, AttnRes replaces the **read** of the residual stream, not the write. At each sub-layer,
 instead of `norm(prefix_sum)` as the sub-layer input, the model keeps a **list of
 residual sources** (embedding + per-block partial sums + the running intra-block sum)
 and forms the sub-layer input as a **per-token softmax mixture over that list along the
@@ -31,8 +36,10 @@ depth axis**:
     input = RMSNorm_out(o)                  (the block's ordinary prenorm, folded in)
 
 The sub-layer's output is then **added** into a running prefix sum exactly as in a
-vanilla pre-norm transformer — the stream decomposition is lossless; only the read is
-reweighted. One extra top-level mixture replaces the final `norm(h)` before the LM head.
+vanilla pre-norm transformer — the stored pieces sum algebraically to the full
+stream, but the AttnRes *read* of them is a learned convex mixture, not a lossless
+reconstruction; only the write path stays a plain sum. One extra top-level mixture
+replaces the final `norm(h)` before the LM head.
 Everything decomposes into existing ggml ops (`rms_norm`, `mul`, `mul_mat`, `concat`,
 `soft_max`, `view`, `add`) — see §5.
 
@@ -40,7 +47,7 @@ Everything decomposes into existing ggml ops (`rms_norm`, `mul`, `mul_mat`, `con
 
 ## 1. Exact forward math (op level)
 
-Semantic reference: `fla/ops/attnres/naive.py:56-80`. Inputs
+Semantic reference: [`fla/ops/attnres/naive.py:56-80`](https://github.com/fla-org/flash-linear-attention/blob/d1ce07369d581813553f30a750af3b6b5f9af6a9/fla/ops/attnres/naive.py#L56-L80). Inputs
 (`naive.py:33-48` / `fused.py:522-542`):
 
 - `query` — one vector `[D]` (accepted as `[D]` or `[D,1]`, flattened at
@@ -74,7 +81,7 @@ Step by step (`naive.py:63-75`, all math in fp32 with a single final downcast,
    downcast to input dtype (`naive.py:75`). `return_weights` optionally exposes `p`
    (`naive.py:77-79`); the model never uses it.
 
-The fused Triton kernel (`fused.py:38-121`) computes the same thing with an online
+The fused Triton kernel ([`fused.py:38-121`](https://github.com/fla-org/flash-linear-attention/blob/d1ce07369d581813553f30a750af3b6b5f9af6a9/fla/ops/attnres/fused.py#L38-L121)) computes the same thing with an online
 softmax over L-tiles (`fused.py:68-100`), one program per position `i_n`. Two identities
 in it worth keeping for the C port:
 
@@ -95,17 +102,18 @@ fp32, with and without folded output norm (`tests/ops/test_attnres.py:19-39`).
 
 ## 2. Wiring in the KDA model — where sources come from
 
-`fla/models/kda/modeling_kda.py`. Enabled iff `config.attnres_block_size is not None`
-(`modeling_kda.py:88`, `configuration_kda.py:48,78`).
+[`fla/models/kda/modeling_kda.py`](https://github.com/fla-org/flash-linear-attention/blob/d1ce07369d581813553f30a750af3b6b5f9af6a9/fla/models/kda/modeling_kda.py). Enabled iff `config.attnres_block_size is not None`
+(`modeling_kda.py:88`, [`configuration_kda.py:48,78`](https://github.com/fla-org/flash-linear-attention/blob/d1ce07369d581813553f30a750af3b6b5f9af6a9/fla/models/kda/configuration_kda.py#L48)).
 
 ### The stream decomposition
 
 With attnres on, the tensor passed between layers is **not** the full residual stream;
 it is the **running intra-block prefix sum** (`modeling_kda.py:117-120,176-179`), and
 the rest of the stream lives in `attnres_states`, a list of completed-block partial
-sums threaded through the layer loop (`modeling_kda.py:321-325,333-341`). The total
-stream is always `Σ attnres_states + prefix_sum` — the decomposition is exact; AttnRes
-only changes how sub-layers *read* it.
+sums threaded through the layer loop (`modeling_kda.py:321-325,333-341`). The pieces
+sum algebraically to the stream (`Σ attnres_states + prefix_sum` = what a vanilla
+stream would carry); the AttnRes read, however, is a learned convex mixture of the
+pieces, not that sum.
 
 Per sub-layer (attn side shown; mlp side is symmetric):
 
@@ -148,16 +156,19 @@ weight is folded in the same way, so the LM head consumes a normed depth mixture
 | L3 mlp (idx 7) | `[emb, B0]` | `attn2+mlp2+attn3` | `[emb, B0, …]` |
 | top-level | `[emb, B0, B1]` | `B2`-so-far | `[emb, B0, B1, B2]` |
 
-Sources are **disjoint partial sums** of sub-layer outputs (plus the embedding); a
-vanilla transformer is recovered exactly when `p` is uniform-summing — which is the
-init: pseudo-queries are **zero-initialized** so the softmax starts uniform
-(`modeling_kda.py:219-222`, "paper §5").
+Sources are **disjoint partial sums** of sub-layer outputs (plus the embedding).
+Zero-initialized pseudo-queries (`modeling_kda.py:219-222`, "paper §5") produce
+uniform depth weights — but a uniform softmax yields the depth **mean** of the
+sources, not their sum, and the RMSNorm that follows removes that 1/L scale only
+approximately (finite eps). So the init closely preserves the *direction* of the
+ordinary accumulated residual while not being strictly identical to a vanilla
+transformer.
 
 ---
 
-## 3. Block vs full mode — what defines a boundary
+## 3. Block vs full mode — what defines a boundary (fla's definition)
 
-`attnres_block_size` ∈ {`None`, `1`, even integer ≥ 2} (`configuration_kda.py:83-88`):
+In fla's config, `attnres_block_size` ∈ {`None`, `1`, even integer ≥ 2} (`configuration_kda.py:83-88`):
 `None` = off, `1` = **full mode**, even `N` = block mode with **`N/2` transformer
 layers (= `N` sub-layers) per block** (`configuration_kda.py:86-87`).
 
@@ -181,9 +192,9 @@ blocking.
 
 ---
 
-## 4. Learned tensors
+## 4. Learned tensors (fla's inventory — K3's names/granularity are checkpoint-dependent)
 
-Per `KDABlock` when attnres is on (`modeling_kda.py:90-93`), plus model level
+In fla's model, per `KDABlock` when attnres is on (`modeling_kda.py:90-93`), plus model level
 (`modeling_kda.py:274-276`). All are dense small tensors, no biases; `nn.Linear(D, 1)`
 weight has shape `[1, D]`; `nn.RMSNorm(D)` weight has shape `[D]` (weight only, no
 bias). Checkpoint keys under `KDAForCausalLM` (base prefix `model`,
@@ -260,7 +271,8 @@ Notes, all load-bearing:
 
 ## 6. Prefill vs decode — what persists
 
-**Nothing persists across forward passes.** `attnres_states` is created as a local
+**In fla's reference wiring, nothing persists across forward passes** — whether K3
+behaves the same is checkpoint-dependent. `attnres_states` is created as a local
 `None` at the top of every `KDAModel.forward` (`modeling_kda.py:325`) and threaded
 through the layer loop only (`modeling_kda.py:333-341`); it is never written to
 `past_key_values`, and the `Cache` object is untouched by any attnres code (grep clean
@@ -268,7 +280,7 @@ outside the two model files and the op). The softmax runs over the **depth** axi
 token (`naive.py:68`) — there is no cross-position interaction, so decoding a token
 needs no history of previous tokens' mixtures.
 
-Consequences for llama.cpp:
+Consequences for llama.cpp — all conditional on K3 following fla's wiring:
 
 - **No memory-module changes.** KV cache / recurrent-state handling
   (`llama_memory_hybrid`, recon 01 §4) is unaffected; AttnRes adds zero cached state.
@@ -308,7 +320,7 @@ The external analysis' form is **directionally right and wrong in four specifics
 
 ---
 
-## Open questions (answerable only with the K3 checkpoint / config, July 27)
+## Open questions (answerable only with the K3 checkpoint / config, announced for July 27)
 
 1. **Is K3's mechanism fla's attnres at all?** `vendor/kimi-linear` has zero attnres
    code, so the only ground truth is fla's op + the KDA/ABC model wiring. If K3's
