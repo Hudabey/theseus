@@ -1,5 +1,7 @@
 # Theseus: Kimi K3 support reconnaissance for llama.cpp
 
+[![tests](https://github.com/Hudabey/theseus/actions/workflows/tests.yml/badge.svg?branch=main)](https://github.com/Hudabey/theseus/actions/workflows/tests.yml)
+
 Pre-release implementation analysis and release-day verification tooling for
 **potential Kimi K3 support in llama.cpp. No working K3 port exists yet.**
 
