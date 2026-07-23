@@ -337,7 +337,7 @@ The external analysis' form is **directionally right and wrong in four specifics
 4. **Logit scale** — fla's model path uses `scale = 1.0` (no override passed,
    `modeling_kda.py:135-141`); does K3's config set e.g. `D^-1/2` (the op supports it,
    `fused.py:534-535`)?
-5. **Do the periodic full-attention (MLA?) layers also carry AttnRes?** In fla the flag
+5. **Do the periodic full-attention (MLA — recon 05 A5) layers also carry AttnRes?** In fla the flag
    is block-level and independent of the attn type (`modeling_kda.py:88`, applies to
    both `Attention` and `KimiDeltaAttention` layers) — confirm K3 doesn't exempt its
    global layers.

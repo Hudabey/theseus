@@ -1,1 +1,30 @@
 vendor/
+
+# secrets / environment
+.env*
+
+# virtual environments
+.venv/
+venv/
+env/
+
+# caches
+__pycache__/
+*.py[cod]
+.cache/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# logs
+*.log
+
+# model artifacts / pulled tensors (must never be committable by accident)
+*.safetensors
+*.gguf
+*.bin
+*.pt
+*.pth
+*.npy
+tensors.json
+unmatched.json

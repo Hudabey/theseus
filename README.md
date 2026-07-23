@@ -1,4 +1,4 @@
-# theseus
+# Theseus: Kimi K3 support reconnaissance for llama.cpp
 
 Pre-release implementation analysis and release-day verification tooling for
 **potential Kimi K3 support in llama.cpp. No working K3 port exists yet.**
@@ -8,8 +8,8 @@ Attention (KDA), Attention Residuals, periodic MLA layers, and native-MXFP4 rele
 weights, announced for release by **July 27, 2026**. Findings here will be updated
 against the released checkpoint.
 
-Everything in these docs is verified against actual code with file:line references —
-nothing is asserted from memory or from announcement copy. See
+Implementation claims are tied to commit-pinned code references. Pre-release K3
+claims are separately labeled as externally stated, derived, or unresolved. See
 [REFERENCES.md](REFERENCES.md) for the exact upstream commits the citations resolve
 against.
 
@@ -42,15 +42,26 @@ against.
   inventory from shard headers via HTTP range requests (no weight download), targeted
   small-tensor pulls, and a decision tree mapping each finding to the work it
   unblocks. Rehearsed end-to-end against Kimi-Linear-48B.
+- **[tools/drop_day/](tools/drop_day/)** — the five standalone scripts the runbook
+  invokes: release watcher, upload-completeness gate, shard-header fetch (HTTP range
+  requests), tensor-name classifier, and small-tensor puller.
+  `pull_small.py --self-test` runs the offline BF16-decode unit test.
 
 ## Status
 
-Pre-release. The runbook is frozen; docs 01/04/05 are current as of 2026-07-22.
+Pre-release. The runbook is frozen; docs 01/04/05 are current as of 2026-07-23.
 After the weights drop, verified findings will be recorded and the docs
 corrected where the checkpoint contradicts them.
 
-Runbook tooling dependencies: `pip install -r requirements.txt`
-(`huggingface_hub`, `safetensors`, `requests`, `numpy`).
+## Prerequisites
+
+Runbook tooling: `pip install -r requirements.txt` (`huggingface_hub`, `safetensors`,
+`requests`, `numpy`), plus the `hf` CLI (ships with `huggingface_hub`) and `jq` on
+PATH.
+
+Exact versions used in the 2026-07-22 rehearsal: Python 3.12.2, `huggingface_hub`
+1.3.5 (also provides the `hf` CLI), `safetensors` 0.5.2, `requests` 2.32.4, `numpy`
+1.26.4, `jq` 1.6.
 
 ## License
 

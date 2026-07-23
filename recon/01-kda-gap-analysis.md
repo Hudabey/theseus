@@ -13,11 +13,11 @@ against the **gated-deltanet** paths already in the llama.cpp family. Reference 
 
 ---
 
-## TL;DR — the headline finding (flagged against CLAUDE.md)
+## TL;DR — the headline finding (revises the initial working hypothesis)
 
-**CLAUDE.md's premise is already stale for mainline llama.cpp.** The strategy "adapt existing
-gated-deltanet support (built for Qwen3-Next) to KDA" describes work that is **already done**
-in `vendor/llama.cpp`:
+**The initial working hypothesis is already stale for mainline llama.cpp.** The assumed
+strategy — "adapt existing gated-deltanet support (built for Qwen3-Next) to KDA" — describes
+work that is **already done** in `vendor/llama.cpp`:
 
 - The core op `ggml_gated_delta_net` already has a **first-class per-channel (KDA) gate mode**,
   documented in the header and supported by **every backend** (CPU, CUDA, Metal, Vulkan, SYCL,
@@ -197,18 +197,27 @@ Framed for the **K3 target**, primarily against mainline (the viable base).
   `A_log → -exp(A_log)` (`:175-176`), `dt_bias → dt_proj.bias` (`:177-179`), conv1d reshape
   (`:158-170`), plus the MXFP4 passthrough (below) and any new attnres tensors.
 - **Full-attention layer type.** Kimi-Linear's global layers are **MLA with NoPE**
-  (`kimi-linear.cpp:242,374-473`; `tech_report.pdf` p.6). If K3's globals are MLA, reuse as-is;
-  if GQA (like Qwen3-Next), swap in `build_layer_attn`. **Unknown — see Open questions.**
+  (`kimi-linear.cpp:242,374-473`; `tech_report.pdf` p.6). K3's are externally stated to be
+  **MLA every four layers** (vLLM preview — recon 05 A5 [V]), so the Kimi-Linear MLA path is
+  the reuse target; the preview also states a **new gate projection** on K3's MLA (recon 05
+  A6) that is net-new graph work. Remaining unknowns: placement offset, tensor layout, and
+  the gate wiring — see Open questions.
 
 ### Missing entirely (must be built)
 
 - **Attention Residuals.** Nothing in either repo. In fla this is [`fla/ops/attnres/`](https://github.com/fla-org/flash-linear-attention/blob/d1ce07369d581813553f30a750af3b6b5f9af6a9/fla/ops/attnres/naive.py#L56-L75) (a depth-axis
   softmax over RMS-normed residual sources: `naive.py:56-75`) wired into the KDA model block
-  ([`fla/models/kda/modeling_kda.py:88-167`](https://github.com/fla-org/flash-linear-attention/blob/d1ce07369d581813553f30a750af3b6b5f9af6a9/fla/models/kda/modeling_kda.py#L88-L167)), **not** a standard residual add. This is the single
-  largest net-new C/GGML piece: a new op (or a graph-composed equivalent) plus new tensors
-  (`attn_res_proj`, `attn_res_norm`, …) plus converter support. **Note:** the paper this is named
-  after (fla's `attnres`) is a Kimi-Linear-era construct; whether K3 uses exactly this is an open
-  question, but *some* attention-residual mechanism is called for by CLAUDE.md and exists nowhere.
+  ([`fla/models/kda/modeling_kda.py:88-167`](https://github.com/fla-org/flash-linear-attention/blob/d1ce07369d581813553f30a750af3b6b5f9af6a9/fla/models/kda/modeling_kda.py#L88-L167)), **not** a standard residual add. This is the
+  largest net-new piece, but the correctness-first path is **graph composition from existing
+  ggml ops** (`rms_norm`, `mul_mat`, `concat`, `soft_max`, `view`, `mul`, `add` — recon 04 §5,
+  "no new kernel is required for a day-one correct path"); a **fused op** (modeled on
+  `fla/ops/attnres/fused.py:38-121`) is conditional on the released layout (full-mode's
+  O(layers²) node growth — recon 04 §5) and on measured performance need. Net-new either way:
+  the tensors (`attn_res_proj`, `attn_res_norm`, …), the prefix-sum stream discipline, and
+  converter support. **Note:** the mechanism fla implements is a Kimi-Linear-era construct;
+  whether K3 uses exactly this is an open question, but *some* attention-residual mechanism is
+  externally stated for K3 ("AttnRes across depth" — vLLM preview, recon 05 §2) and exists in
+  neither llama.cpp repo.
 - **Native MXFP4 → GGUF without re-quant.** The type exists, but no Kimi/Qwen3-Next conversion
   path preserves native MXFP4 — mainline even forces KDA conv weights to F32
   (`conversion/base.py` comment "Kimi KDA conv weights should be F32"). A passthrough path that
@@ -233,15 +242,15 @@ Ordered roughly by dependency.
 | 2 | Register `LLM_ARCH_KIMI_K3` + KV keys | `llama-arch.{h,cpp}` | **S** | Clone Kimi-Linear entries. |
 | 3 | New graph `src/models/kimi-k3.cpp` | clone of `kimi-linear.cpp:4-528` | **M** | Reuses `build_delta_net`; edits = layout + residuals. |
 | 4 | Hybrid-layout signaling for K3 | `kimi-k3.cpp` load hparams, `llama-hparams.cpp` | **M** | Map 2.8T layout to `is_recr_impl[]`; maybe new KV key. |
-| 5 | **Attention Residuals** op/graph + tensors | new op in `ggml.c` + backends **or** graph-composed; `kimi-k3.cpp`; `llama-arch.cpp` tensor enums | **L** | Net-new. Model on `fla/ops/attnres/naive.py:56-75`. Biggest item. |
-| 6 | Full-attn layer: confirm MLA vs GQA, wire accordingly | `kimi-k3.cpp` | **S–M** | Reuse `build_attn`/MLA path or `build_layer_attn`. Depends on #open-q. |
+| 5 | **Attention Residuals** graph + tensors | graph-composed from existing ops in `kimi-k3.cpp` (recon 04 §5); `llama-arch.cpp` tensor enums; fused op only if full-mode layout or perf forces it | **M–L** | Net-new. Correctness-first: composition per recon 04 §5; fused-op contingency per recon 04 §5 / runbook D3. |
+| 6 | Full-attn layers (MLA, externally stated — recon 05 A5) + new gate projection | `kimi-k3.cpp` | **S–M** | Reuse the Kimi-Linear MLA path; gate projection (recon 05 A6) is net-new; offset/layout pending (OQ3). |
 | 7 | Converter `conversion/kimi_k3.py` | clone `conversion/kimi_linear.py` | **M** | `A_log`/`dt_bias`/conv reshape reusable; add attnres tensors. |
 | 8 | **Native MXFP4 passthrough** in converter | `conversion/kimi_k3.py`, `conversion/base.py`, `gguf-py` | **L** | Keep MXFP4 MoE tensors un-dequantized; verify block layout `QK_MXFP4=32`. |
 | 9 | gguf-py constants/tensor-mapping for K3 | `gguf-py/gguf/constants.py`, `tensor_mapping.py` | **S** | Clone Kimi-Linear block `constants.py:4392-4432`, `tensor_mapping.py:893-912`. |
 | 10 | End-to-end validation vs fla reference | new test | **M** | Compare against `fla` naive/`chunk_kda` on real K3 weights. |
 
 Net: if #1 confirms KDA is unchanged, the delta-net **kernel work may be near zero**; the real cost
-concentrates in **#5 (Attention Residuals, L)** and **#8 (MXFP4 passthrough, L)**, with the rest
+concentrates in **#5 (Attention Residuals, M–L)** and **#8 (MXFP4 passthrough, L)**, with the rest
 being arch-registration and converter cloning.
 
 ---
@@ -254,16 +263,20 @@ being arch-registration and converter cloning.
    determinable until the weights/config release (announced for July 27).
 2. **What exactly are K3's "Attention Residuals," and where do they attach?** fla's `attnres`
    (depth-axis softmax over RMS-normed residual sources, `fla/ops/attnres/naive.py:56-75`, wired
-   in `fla/models/kda/modeling_kda.py:88-167`) is the closest reference, but CLAUDE.md's phrasing
-   ("Attention Residuals on top of KDA") is not code-confirmed for K3. Is it fla-style attnres, a
-   per-layer skip into recurrent state, or something new? Nothing analogous exists in either repo.
-3. **MLA or GQA for K3's periodic full-attention layers?** Kimi-Linear uses **MLA with NoPE**
-   (`kimi-linear.cpp:242,374-473`); Qwen3-Next uses GQA. This picks which existing layer-build
-   code (#6) is reused. CLAUDE.md says "full-attention layers" without specifying MLA vs GQA.
+   in `fla/models/kda/modeling_kda.py:88-167`) is the closest reference, but the
+   announcement-level phrasing ("AttnRes across depth" — vLLM preview, recon 05 §2) is not
+   code-confirmed for K3. Is it fla-style attnres, a per-layer skip into recurrent state, or
+   something new? Nothing analogous exists in either repo.
+3. ~~MLA or GQA for K3's periodic full-attention layers?~~ **Resolved externally: MLA, every
+   four layers** (vLLM preview — recon 05 A5 [V]); the Kimi-Linear **MLA-with-NoPE** path
+   (`kimi-linear.cpp:242,374-473`) is the reuse target for #6. Still open: the **placement
+   offset** (93 mod 4 ≠ 0 — recon 05 A12), the **tensor layout**, and the **new MLA gate
+   projection's wiring** (recon 05 A6 / 05-OQ5).
 4. **How is K3's hybrid layout signaled** — a Kimi-Linear-style `n_head_kv==0` per-layer mark, a
    Qwen3-Next `full_attention_interval` / explicit `attention.recurrent_layers` list, or a new
-   key? (Paper's reference ratio is 3:1 KDA:MLA — `tech_report.pdf` p.6 — but K3 at 2.8T may
-   differ.)
+   key? (The every-four-layers-MLA statement — recon 05 A5 — matches Kimi-Linear's published
+   3:1 ratio, `tech_report.pdf` p.6; the in-checkpoint signaling mechanism and the placement
+   offset remain unknown.)
 5. **Does native MXFP4 survive as MoE weights unchanged?** Is K3's MXFP4 block layout compatible
    with ggml `block_mxfp4` (`QK_MXFP4=32`, `e:uint8 + qs[16]`)? If yes, #8 is a passthrough; if
    the scale/packing differs, a translation step is needed. Mainline currently forces KDA conv

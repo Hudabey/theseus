@@ -7,12 +7,15 @@ weight bytes. Every step lists the exact command, what to extract, and which rec
 
 Example environment: any Python ≥ 3.9 with `huggingface_hub`, `safetensors`,
 `requests`, and `numpy`; the `hf` CLI and `jq` on PATH. `$PY` below is that
-interpreter — verify the imports before drop day, not during it.
+interpreter — verify the imports before drop day, not during it. Exact rehearsal
+toolchain (2026-07-22): Python 3.12.2, `huggingface_hub` 1.3.5 (also provides the
+`hf` CLI), `safetensors` 0.5.2, `requests` 2.32.4, `numpy` 1.26.4, `jq` 1.6.
 
 The helper scripts invoked below as `tools/drop_day/*.py` are five small standalone
 HF-API utilities (release watcher, completeness gate, shard-header fetch, tensor-name
-classifier, small-tensor puller; ~100 lines each — not included in this repo, and
-each command's surrounding text states exactly what its script does). They were
+classifier, small-tensor puller; ~100 lines each — included in this repo under
+[`tools/drop_day/`](../tools/drop_day/); `pull_small.py --self-test` is the offline
+BF16-decode unit test referenced in Step 3). They were
 **rehearsed end-to-end on 2026-07-22 against
 `moonshotai/Kimi-Linear-48B-A3B-Instruct`** (same lineage): completeness gate
 passed 20/20 shards, header fetch returned 20,493 tensors with zero shard downloads,
@@ -136,9 +139,11 @@ evidence before moving on.
 
 ### 1d. Tokenizer + chat template (do this before any tensor work)
 
-Rationale: Unsloth's V4 experience — chat-template and multi-turn bugs caused more
-user-facing quality damage than tensor conversion did. The template is a deliverable,
-not an afterthought.
+Rationale: Unsloth's documented DeepSeek-V4 release experience — multi-turn
+conversations misbehaved against the HF baseline across GGUF providers, and the fix
+was a chat-template rework ("tested over 4000 conversations"), not a
+tensor-conversion one (https://unsloth.ai/docs/models/deepseek-v4). The template is a
+deliverable, not an afterthought.
 
 ```bash
 # K3 template + tokenizer (already in $WORK/repo from 1a; if not:)
