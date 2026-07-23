@@ -34,9 +34,9 @@ permalink base:
 - In the converter, `MOSTLY_MXFP4_MOE` is a **file-level label applied after the
   tensors are written**, not a per-tensor selection rule; per-tensor MXFP4 selection
   by rule exists only in the separate requantize tool (§3.2).
-- Our repacker (`src/repack_mxfp4/repack.py`) already implements the full mapping and
+- Our repacker (`src/repack.py`) already implements the full mapping and
   is proven byte-identical to the gpt-oss converter's transform on random input
-  (§5); its oracle suite (`tests/oracle/test_repack_mxfp4.py`) is the pre-drop
+  (§5); its oracle suite (`tests/test_repack_mxfp4.py`) is the pre-drop
   acceptance gate, extended by the on-checkpoint test defined in §6.
 
 ---
@@ -121,7 +121,7 @@ covers the `e ∈ {0,1}` subnormal-scale cases (the halved decode keeps them
 representable) and the overflow edge (`e ≥ 253` with |element| ≥ 8 → `+inf`/`−inf` on
 both sides) — and the oracle tests verify float32 **bit equality** across normal,
 subnormal, overflow, and signed-zero code cases
-(`tests/oracle/test_repack_mxfp4.py`). Consequence: **the scale byte is copied, never
+(`tests/test_repack_mxfp4.py`). Consequence: **the scale byte is copied, never
 recomputed** — both shipping converters do exactly that (§2).
 
 Caveat on evidence: the vendor tree contains **no HF-side MXFP4 dequant** to cite.
@@ -292,7 +292,7 @@ Each item is a hard gate; the first three decide passthrough-vs-lossy (runbook D
    rests on the doubled-values/halved-scale identity (§1.3). Policy for `e = 0xFF`
    (E8M0 NaN): ggml won't decode it meaningfully (`ggml-impl.h:490`) —
    **assert-and-abort on sight**, don't write it through. Implemented:
-   `repack_hf_to_ggml` refuses 0xFF (`src/repack_mxfp4/repack.py:72-74`), with an
+   `repack_hf_to_ggml` refuses 0xFF (`src/repack.py:72-74`), with an
    oracle test feeding one and expecting the failure
    (`test_repack_mxfp4.py::test_rejects_nan_scale`).
 4. **Fused splits at row granularity only.** Any gate/up (or gate-projection) defusing
@@ -314,7 +314,7 @@ Each item is a hard gate; the first three decide passthrough-vs-lossy (runbook D
 
 ---
 
-## 5. Mapping onto our repacker (`src/repack_mxfp4/repack.py`)
+## 5. Mapping onto our repacker (`src/repack.py`)
 
 The repacker was written against exactly the §1 ground truth (its docstring cites the
 same lines: `repack.py:1-18`). Component ↔ vendor mapping:
@@ -342,7 +342,7 @@ the converter, and everything downstream is unchanged.
 **Equivalence to the gpt-oss transform is proven by a reproducible test**: a numpy
 port of `transform_nibble_layout` + the scale concat (`gpt_oss.py:23-46,55`) produces
 byte-identical output to `repack_hf_to_ggml` on seeded random `[64, 90, 16]` u8 input
-— `test_gptoss_transform_equivalence` in `tests/oracle/test_repack_mxfp4.py:88-115`,
+— `test_gptoss_transform_equivalence` in `tests/test_repack_mxfp4.py:88-115`,
 with the numpy port living inside the test (the deepseek construction at
 `deepseek.py:619-622` is identical to ours by inspection). So one repacker covers
 both shipping conventions.
@@ -363,12 +363,12 @@ test feeding one and expecting the failure (`test_rejects_nan_scale`).
   not exist; recon 01 §5 items #7/#8);
 - pairing/naming logic is the converter's job (§4-5), out of repacker scope.
 
-Oracle coverage (`tests/oracle/test_repack_mxfp4.py`): bit-exact dequant equality via
+Oracle coverage (`tests/test_repack_mxfp4.py`): bit-exact dequant equality via
 u32 views on random tensors (`:29-36`), scale edges `{0,1,2,126,127,128,254}`
 exercising the denormal branch (`:39-44`), byte round-trip (`:47-50`), a hand-built
 known vector pinning the split-half convention and the E2M1 value ladder (`:53-68`),
 NaN-scale rejection (`:80-86`), and gpt-oss transform equivalence (`:88-115`). Run it
-from a fresh clone: `python -m pytest tests/oracle/test_repack_mxfp4.py`.
+from a fresh clone: `python -m pytest tests/test_repack_mxfp4.py`.
 
 ---
 

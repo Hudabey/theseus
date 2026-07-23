@@ -34,7 +34,7 @@ against.
   is bit-exact, the two shipping converter precedents (gpt-oss, DeepSeek-V4), the
   lossless-repack checklist, and the T1–T4 bit-exactness acceptance gates. The
   repacker itself and its runnable oracle suite are in this repo
-  ([src/repack_mxfp4/](src/repack_mxfp4/), [tests/oracle/](tests/oracle/)). Scope
+  ([src/repack.py](src/repack.py), [tests/](tests/)). Scope
   note: K3's actual MXFP4 serialization is open-question-gated until the checkpoint.
 - **[recon/04-attnres-analysis.md](recon/04-attnres-analysis.md)** — Attention
   Residuals ground truth from the flash-linear-attention reference implementation:
@@ -73,7 +73,7 @@ Exact versions used in the 2026-07-22 rehearsal: Python 3.12.2, `huggingface_hub
 1.26.4, `jq` 1.6.
 
 Oracle test suite (MXFP4 repacker bit-exactness, recon/02 §6):
-`python -m pytest tests/oracle/test_repack_mxfp4.py`
+`python -m pytest tests/test_repack_mxfp4.py`
 
 ## License
 

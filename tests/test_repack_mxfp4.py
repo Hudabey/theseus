@@ -8,8 +8,8 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
-from repack_mxfp4.repack import (  # noqa: E402
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from repack import (  # noqa: E402
     BLOCK_BYTES, QK, dequant_ggml, dequant_hf, repack_hf_to_ggml, unpack_ggml_to_hf,
 )
 
