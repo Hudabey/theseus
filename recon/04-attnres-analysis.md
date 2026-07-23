@@ -9,7 +9,7 @@ carries a file:line ref. The paper the op cites is arXiv 2603.15031
 
 Reference surface: `naive.py` (semantic reference), `fused.py` (Triton kernel — the
 version the model actually calls), `backends/gluon.py` (opt-in Gluon port, numerically
-identical, `backends/gluon.py:8-17`), `tests/ops/test_attnres.py` (frozen parity test),
+identical, `backends/gluon.py:8-17`), `fla/tests/ops/test_attnres.py` (frozen parity test),
 `fla/models/kda/{modeling,configuration}_kda.py` (wiring). The identical wiring also
 exists in `fla/models/abc/modeling_abc.py:88-167` — the mechanism is model-agnostic;
 nothing about it is KDA-specific. `vendor/kimi-linear` contains **zero** attnres
@@ -96,7 +96,7 @@ Kernel-only constraints that do **not** carry semantic meaning: sources must be
 16-byte aligned and are flattened contiguous (`fused.py:307`, `fused.py:557`); the
 pointer tuple is padded to `L2 = max(8, next_pow2(L))` as a compile-signature trick
 (`fused.py:301-308`). Tested envelope: L up to 29, T up to 8000, D up to 7186, fp16 and
-fp32, with and without folded output norm (`tests/ops/test_attnres.py:19-39`).
+fp32, with and without folded output norm (`fla/tests/ops/test_attnres.py:19-39`).
 
 ---
 
