@@ -115,18 +115,21 @@ to integer `0` (the sign of zero is dropped at decode — relevant for §6).
 `ggml-impl.h:490` — **no NaN handling** (E8M0 `0xFF` is NaN in the OCP spec).
 
 The OCP/HF-side semantics are `value = e2m1(code) · 2^(e−127)` with un-doubled E2M1
-elements {0, ±0.5, …, ±6}. ggml computes `(2·e2m1(code)) · (2^(e−127)/2)`. Both are
-the same real number reached by exact power-of-two scalings, so the float32 results
-are **bit-identical**, including the `e ∈ {0,1}` subnormal-scale cases (the halved
-decode keeps them representable) and the overflow edge (`e ≥ 253` with |element| ≥ 8
-→ `+inf`/`−inf` on both sides). Consequence: **the scale byte is copied, never
+elements {0, ±0.5, …, ±6}. ggml computes `(2·e2m1(code)) · (2^(e−127)/2)`. The two
+formulations are algebraically equivalent through exact power-of-two scaling — this
+covers the `e ∈ {0,1}` subnormal-scale cases (the halved decode keeps them
+representable) and the overflow edge (`e ≥ 253` with |element| ≥ 8 → `+inf`/`−inf` on
+both sides) — and the oracle tests verify float32 **bit equality** across normal,
+subnormal, overflow, and signed-zero code cases
+(`tests/oracle/test_repack_mxfp4.py`). Consequence: **the scale byte is copied, never
 recomputed** — both shipping converters do exactly that (§2).
 
-Caveat on evidence: the vendor tree contains **no HF-side MXFP4 dequant** to cite —
-the adjacent-pair + raw-E8M0 source convention is asserted by the converter comment
-at `conversion/deepseek.py:617-618` and validated transitively by shipped, working
-gpt-oss GGUFs, not by an in-tree reference decoder. Our repacker carries its own
-HF-side reference for this reason (§5).
+Caveat on evidence: the vendor tree contains **no HF-side MXFP4 dequant** to cite.
+The source convention is stated directly in the DeepSeek-V4 converter
+(`conversion/deepseek.py:617-618`) and independently encoded by the gpt-oss
+converter's repacking transform (`conversion/gpt_oss.py:23-46` — the two are proven
+byte-equivalent by `test_gptoss_transform_equivalence`, §5). Our repacker carries its
+own HF-side reference decoder for this reason (§5).
 
 ### 1.4 The lossy path a repacker must avoid
 
@@ -286,9 +289,12 @@ Each item is a hard gate; the first three decide passthrough-vs-lossy (runbook D
    encoder (`ggml-quants.c:350-382`, `quants.py:669-690`) must be unreachable from
    the MXFP4 path (dequant bypass wired as in `gpt_oss.py:17-21`).
 3. **Scale integrity.** Scale bytes copied verbatim into `block_mxfp4.e`; correctness
-   rests on the doubled-values/halved-scale identity (§1.3). Policy needed for
-   `e = 0xFF` (E8M0 NaN): ggml won't decode it meaningfully (`ggml-impl.h:490`) —
-   **assert-and-abort on sight**, don't write it through.
+   rests on the doubled-values/halved-scale identity (§1.3). Policy for `e = 0xFF`
+   (E8M0 NaN): ggml won't decode it meaningfully (`ggml-impl.h:490`) —
+   **assert-and-abort on sight**, don't write it through. Implemented:
+   `repack_hf_to_ggml` refuses 0xFF (`src/repack_mxfp4/repack.py:72-74`), with an
+   oracle test feeding one and expecting the failure
+   (`test_repack_mxfp4.py::test_rejects_nan_scale`).
 4. **Fused splits at row granularity only.** Any gate/up (or gate-projection) defusing
    must slice whole rows (gpt-oss's `[:, ::2]` pattern, `gpt_oss.py:73-80`); an
    element-granularity split cuts 32-blocks and forces requantization.
@@ -320,9 +326,9 @@ same lines: `repack.py:1-18`). Component ↔ vendor mapping:
 | `e8m0_to_fp32` (HF-side scale) | `repack.py:33-37` | `ggml_e8m0_to_fp32`, `ggml-impl.h:439-473` |
 | `e8m0_to_fp32_half` incl. `e<2` denormals | `repack.py:40-46` | `ggml-impl.h:477-495` |
 | `_split_nibbles_hf` (adjacent-pair decode) | `repack.py:49-53` | source convention per `deepseek.py:617-618` |
-| `repack_hf_to_ggml` (split-half assembly, scale byte 0) | `repack.py:64-81` | `deepseek.py:619-622`; decode loop `ggml-quants.c:569-586` |
-| `dequant_ggml` (bit-exact C mirror) | `repack.py:84-94` | `dequantize_row_mxfp4` |
-| `unpack_ggml_to_hf` (round-trip inverse) | `repack.py:97-106` | — |
+| `repack_hf_to_ggml` (split-half assembly, scale byte 0) | `repack.py:64-85` | `deepseek.py:619-622`; decode loop `ggml-quants.c:569-586` |
+| `dequant_ggml` (bit-exact C mirror) | `repack.py:88-98` | `dequantize_row_mxfp4` |
+| `unpack_ggml_to_hf` (round-trip inverse) | `repack.py:101-110` | — |
 
 **The pluggable seam** is the source-layout decode: `_split_nibbles_hf` + verbatim
 scale passthrough encode today's only observed HF convention (shared by both vendor
@@ -333,31 +339,36 @@ change. The seam is a function boundary, not yet a formal spec object; if drop d
 reveals a variant layout, the variant becomes a second decode function selected by
 the converter, and everything downstream is unchanged.
 
-**Equivalence to the gpt-oss transform is proven executably**: a numpy port of
-`transform_nibble_layout` + the scale concat (`gpt_oss.py:23-46,55`) produces
-byte-identical output to `repack_hf_to_ggml` on random `[64, 90, 16]` u8 input
-(run 2026-07-23; the deepseek construction at `deepseek.py:619-622` is identical to
-ours by inspection). So one repacker covers both shipping conventions.
+**Equivalence to the gpt-oss transform is proven by a reproducible test**: a numpy
+port of `transform_nibble_layout` + the scale concat (`gpt_oss.py:23-46,55`) produces
+byte-identical output to `repack_hf_to_ggml` on seeded random `[64, 90, 16]` u8 input
+— `test_gptoss_transform_equivalence` in `tests/oracle/test_repack_mxfp4.py:88-115`,
+with the numpy port living inside the test (the deepseek construction at
+`deepseek.py:619-622` is identical to ours by inspection). So one repacker covers
+both shipping conventions.
 
 **Shape genericity:** `repack_hf_to_ggml` accepts arbitrary leading dims
-(`[..., cols/2]` + `[..., cols/32]`, `repack.py:71-76`) — per-expert 2-D (DSv4 style)
+(`[..., cols/2]` + `[..., cols/32]`, `repack.py:75-80`) — per-expert 2-D (DSv4 style)
 and stacked 3-D both work; gpt-oss-style 4-D `[..., n_blocks, 16]` needs a trailing
 reshape to `[..., n_blocks·16]` first.
 
-**Known gaps vs the §4 checklist** (all deliberate until the checkpoint answers):
+**Closed since first draft:** the `e = 0xFF` NaN-scale policy of §4-3 —
+`repack_hf_to_ggml` now refuses NaN scale bytes (`repack.py:72-74`), with an oracle
+test feeding one and expecting the failure (`test_rejects_nan_scale`).
 
-- no `e = 0xFF` NaN-scale policy (oracle tests sample `0..254` only,
-  `tests/oracle/test_repack_mxfp4.py:22`) — needs the assert of §4-3;
+**Known gaps vs the §4 checklist** (deliberate until the checkpoint answers):
+
 - no axis-orientation check — the caller asserts contraction-dim-last (§4-1);
 - no fused-split helper (§4-4) and no converter wiring (`conversion/kimi_k3.py` does
   not exist; recon 01 §5 items #7/#8);
 - pairing/naming logic is the converter's job (§4-5), out of repacker scope.
 
-Oracle coverage today (`tests/oracle/test_repack_mxfp4.py`): bit-exact dequant
-equality via u32 views on random tensors (`:29-36`), scale edges
-`{0,1,2,126,127,128,254}` exercising the denormal branch (`:39-44`), byte round-trip
-(`:47-50`), and a hand-built known vector pinning the split-half convention and the
-E2M1 value ladder (`:53-68`).
+Oracle coverage (`tests/oracle/test_repack_mxfp4.py`): bit-exact dequant equality via
+u32 views on random tensors (`:29-36`), scale edges `{0,1,2,126,127,128,254}`
+exercising the denormal branch (`:39-44`), byte round-trip (`:47-50`), a hand-built
+known vector pinning the split-half convention and the E2M1 value ladder (`:53-68`),
+NaN-scale rejection (`:80-86`), and gpt-oss transform equivalence (`:88-115`). Run it
+from a fresh clone: `python -m pytest tests/oracle/test_repack_mxfp4.py`.
 
 ---
 

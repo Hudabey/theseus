@@ -27,6 +27,13 @@ against.
 - **[recon/01-kda-gap-analysis.md](recon/01-kda-gap-analysis.md)** — KDA vs the
   gated-deltanet support already in llama.cpp: the recurrence side-by-side, what
   mainline already ships (more than commonly assumed), and the real gap list for K3.
+- **[recon/02-mxfp4-preservation.md](recon/02-mxfp4-preservation.md)** — native-MXFP4
+  preservation into GGUF: the exact `block_mxfp4` layout, why byte-level passthrough
+  is bit-exact, the two shipping converter precedents (gpt-oss, DeepSeek-V4), the
+  lossless-repack checklist, and the T1–T4 bit-exactness acceptance gates. The
+  repacker itself and its runnable oracle suite are in this repo
+  ([src/repack_mxfp4/](src/repack_mxfp4/), [tests/oracle/](tests/oracle/)). Scope
+  note: K3's actual MXFP4 serialization is open-question-gated until the checkpoint.
 - **[recon/04-attnres-analysis.md](recon/04-attnres-analysis.md)** — Attention
   Residuals ground truth from the flash-linear-attention reference implementation:
   exact forward math, block semantics, checkpoint tensors, prefill/decode behavior,
@@ -62,6 +69,9 @@ PATH.
 Exact versions used in the 2026-07-22 rehearsal: Python 3.12.2, `huggingface_hub`
 1.3.5 (also provides the `hf` CLI), `safetensors` 0.5.2, `requests` 2.32.4, `numpy`
 1.26.4, `jq` 1.6.
+
+Oracle test suite (MXFP4 repacker bit-exactness, recon/02 §6):
+`python -m pytest tests/oracle/test_repack_mxfp4.py`
 
 ## License
 
