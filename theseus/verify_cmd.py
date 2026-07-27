@@ -68,12 +68,19 @@ def run(repo: str) -> int:
                           f"({len(by_shard)} shards)"
                           + (f" — BAD: {bad_shards[:3]}" if bad_shards else ""))
 
-    # MXFP4-style pairing: every *_blocks needs *_scales with consistent shape
-    blocks = {r["name"]: r for r in rows if r["name"].endswith("_blocks")}
-    scales = {r["name"]: r for r in rows if r["name"].endswith("_scales")}
+    # MXFP4-style pairing: GPT-OSS naming (*_blocks/*_scales) and
+    # compressed-tensors naming (*.weight_packed/*.weight_scale)
+    PAIRS = (("_blocks", "_scales"), ("weight_packed", "weight_scale"))
+    blocks, scales = {}, {}
+    for r in rows:
+        for bsuf, ssuf in PAIRS:
+            if r["name"].endswith(bsuf):
+                blocks[r["name"]] = (r, bsuf, ssuf)
+            elif r["name"].endswith(ssuf):
+                scales[r["name"]] = r
     orphans, mismatched = [], []
-    for name, b in blocks.items():
-        s = scales.get(name[: -len("_blocks")] + "_scales")
+    for name, (b, bsuf, ssuf) in blocks.items():
+        s = scales.get(name[: -len(bsuf)] + ssuf)
         if s is None:
             orphans.append(name)
         elif b["shape"][:-1] != s["shape"][:-1] or b["shape"][-1] != s["shape"][-1] * 16:

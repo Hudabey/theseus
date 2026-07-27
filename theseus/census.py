@@ -10,7 +10,7 @@ import re
 BUCKETS = [
     ("attnres", r"res_proj|res_norm|attn_res|mlp_res"),
     ("kda",     r"A_log|dt_bias|dt_proj|f_[ab]_proj|g_[ab]_proj|\bb_proj|conv1d|beta"),
-    ("mla",     r"q_a_|q_b_|kv_a_|kv_b_|q_proj|k_proj|v_proj|o_proj|attn.*gate|kv_norm|q_norm"),
+    ("mla",     r"q_a_|q_b_|kv_a_|kv_b_|q_proj|k_proj|v_proj|o_proj|attn.*gate|kv_norm|q_norm|self_attn\.g_proj"),
     ("moe",     r"experts|shared_expert|router|\bgate\.weight|e_score"),
     ("mlp",     r"gate_proj|up_proj|down_proj"),
     ("norms",   r"norm"),
@@ -48,10 +48,11 @@ def param_count(rows: list[dict]) -> int:
     4-bit values per byte; their `*_scales` companions are metadata, not params."""
     total = 0
     for row in rows:
-        if row["name"].endswith(("_scales", ".scales")):
+        if row["name"].endswith(("_scales", ".scales", "weight_scale")):
             continue
         n = numel(row)
-        if row["dtype"] == "U8" and row["name"].endswith(("_blocks", ".blocks")):
+        if row["dtype"] == "U8" and row["name"].endswith(
+                ("_blocks", ".blocks", "weight_packed")):
             n *= 2
         total += n
     return total

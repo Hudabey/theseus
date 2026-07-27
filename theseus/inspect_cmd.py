@@ -53,10 +53,14 @@ def run(repo: str) -> int:
         print("✗ config.json not found — repo empty, gated without token, or mid-upload")
         return 1
 
+    # vision-language wrappers nest the LM under text_config (e.g. Kimi-K3)
+    tcfg = cfg.get("text_config") or {}
+
     def hp(*keys, default=None):
         for k in keys:
-            if cfg.get(k) is not None:
-                return cfg[k]
+            for c in (cfg, tcfg):
+                if c.get(k) is not None:
+                    return c[k]
         return default
 
     arch = ", ".join(cfg.get("architectures", ["?"]))
