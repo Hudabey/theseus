@@ -117,9 +117,10 @@ def run(repo: str) -> int:
             moe_bytes = sum(census.nbytes(r) for r in buckets["moe"])
             dense_bytes = total_bytes - moe_bytes
             hot = dense_bytes + moe_bytes * active_frac
-            print(f"  {'✓' if ram > hot else '✗'} mmap + expert paging: ~{fmt_bytes(int(hot))} hot "
-                  f"({topk}/{n_experts} experts active) vs {fmt_bytes(ram)} RAM "
-                  f"— throughput depends on disk speed, correctness does not")
+            print(f"  · per-token active weights: ~{fmt_bytes(int(hot))} "
+                  f"({topk}/{n_experts} experts) — a LOWER BOUND on the working set, "
+                  f"not a residency verdict: the cumulative set across a real "
+                  f"generation depends on routing (measure it; do not assume it)")
     print("\nspeed/cost estimates: not shown — theseus reports measured numbers only.")
     return 0
 
