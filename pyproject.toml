@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "theseus-llm"
+version = "0.1.0"
+description = "Inspect, verify, and plan deployment of open models too large for your machine"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.9"
+dependencies = ["requests>=2.28", "numpy>=1.24"]
+
+[project.scripts]
+theseus = "theseus.cli:main"
+
+[tool.setuptools]
+packages = ["theseus"]

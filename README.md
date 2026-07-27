@@ -1,9 +1,41 @@
-# Theseus: Kimi K3 support reconnaissance for llama.cpp
+# Theseus — run models too large for your machine
 
 [![tests](https://github.com/Hudabey/theseus/actions/workflows/tests.yml/badge.svg?branch=main)](https://github.com/Hudabey/theseus/actions/workflows/tests.yml)
 
-Pre-release implementation analysis and release-day verification tooling for
-**potential Kimi K3 support in llama.cpp. No working K3 port exists yet.**
+Tooling for inspecting, verifying, and (in progress) running open models that
+don't fit on one machine. First target: **Kimi K3** (2.8T MoE, announced for
+release July 27, 2026). **No working K3 execution exists yet** — the
+compatibility table below is the honest state.
+
+## The CLI
+
+```
+pip install -e .
+theseus inspect moonshotai/Kimi-K3    # architecture, true size, can-my-hardware-run-it
+theseus verify  moonshotai/Kimi-K3    # checkpoint integrity oracle
+```
+
+Both read the config and safetensors shard headers via HTTP Range requests — a
+multi-trillion-parameter checkpoint is inspected in seconds with **zero weight
+bytes downloaded**. Every number is labeled MEASURED or CALCULATED; speed/cost
+estimates are not shown until they can be measured. Live example against
+Kimi-Linear-48B (K3's lineage) from an 8 GB laptop:
+
+```
+MoE:               256 routed experts, 8 active/token, 1 shared
+tensors:           20493   [MEASURED from shard headers]
+parameters:        0.05T (49,122,681,728)   [CALCULATED from shapes]
+weight download:   91.5 GB   [MEASURED from offsets]
+  ✗ full weights in RAM: need 91.5 GB, have 8.0 GB
+  ✓ mmap + expert paging: ~6.5 GB hot (8/256 experts active) vs 8.0 GB RAM
+```
+
+`theseus verify` checks upload completeness, header/offset consistency against
+real shard sizes, MXFP4 blocks/scales pairing, and per-layer expert-set
+completeness — the checks every converter and backend needs before touching
+terabytes of weights.
+
+## K3 reconnaissance
 
 K3 (announced 2026-07-15 by Moonshot AI) is a 2.8T-parameter MoE with Kimi Delta
 Attention (KDA), Attention Residuals, periodic MLA layers, and native-MXFP4 release

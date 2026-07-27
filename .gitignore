@@ -28,3 +28,5 @@ __pycache__/
 *.npy
 tensors.json
 unmatched.json
+*.egg-info/
+build/
