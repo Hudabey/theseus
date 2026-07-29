@@ -140,6 +140,25 @@ K3_ATTN_GATE_SUFFIX    = "self_attn.g_proj.weight"
 K3_ATTN_GATE_GGUF_NAME = "blk.{bid}.attn_gate.weight"
 
 
+def _release_lazy_chain(t) -> None:
+    """Drop cached eager data along a lazy-tensor chain so mmap-backed
+    buffers (each holding an open fd + VMA) are freed as soon as their bytes
+    have been copied out. Only nodes that can recompute (func present) are
+    cleared."""
+    from gguf.lazy import LazyBase
+    seen: set[int] = set()
+    stack = [t]
+    while stack:
+        o = stack.pop()
+        if isinstance(o, (list, tuple)):
+            stack.extend(o)
+        elif isinstance(o, LazyBase) and id(o) not in seen:
+            seen.add(id(o))
+            if o._func is not None:
+                o._data = None
+            stack.extend(o._args)
+
+
 def _is_k3_mxfp4(quant_config: dict | None) -> bool:
     return (
         isinstance(quant_config, dict)
@@ -397,20 +416,31 @@ class KimiK3Model(TextModel):
         row_bytes = row_halfbytes // 16 * 17  # 16 packed bytes -> one 17-byte block_mxfp4
         byte_shape = (n_experts, rows, row_bytes)
 
-        def build(pairs) -> np.ndarray:
+        def build(opaque) -> np.ndarray:
             data = np.empty(byte_shape, dtype=np.uint8)
-            for i, (b, s) in enumerate(pairs):
-                b = LazyTorchTensor.to_eager(b)
-                s = LazyTorchTensor.to_eager(s)
+            for i, (b, s) in enumerate(opaque["pairs"]):
+                eb = LazyTorchTensor.to_eager(b)
+                es = LazyTorchTensor.to_eager(s)
                 data[i] = repack_hf_to_ggml(
-                    b.contiguous().view(torch.uint8).numpy(),
-                    s.contiguous().view(torch.uint8).numpy(),
+                    eb.contiguous().view(torch.uint8).numpy(),
+                    es.contiguous().view(torch.uint8).numpy(),
                 )
+                # Release the cached mmap-backed buffers immediately: every
+                # materialized tensor holds its own np.memmap (fd + VMA), and
+                # the lazy nodes cache eager results — without this, one
+                # layer's stack pins ~1.8k open files and a full run pins
+                # ~495k mappings (EMFILE / vm.max_map_count death).
+                _release_lazy_chain(b)
+                _release_lazy_chain(s)
             return data
 
+        # NOTE: pairs are wrapped in a dict on purpose — LazyBase._recurse_apply
+        # eagerizes lazy tensors found in list/tuple args BEFORE func runs
+        # (materializing all 2*n_experts mmaps at once), but passes dicts
+        # through untouched.
         lazy = LazyNumpyTensor(
             meta=LazyNumpyTensor.meta_with_dtype_and_shape(np.uint8, byte_shape),
-            args=(pairs,), func=build,
+            args=({"pairs": pairs},), func=build,
         )
         new_name = self.format_tensor_name(K3_EXPERT_TENSOR_KEYS[wid], bid)
         logical = gguf.quant_shape_from_byte_shape(byte_shape, gguf.GGMLQuantizationType.MXFP4)
