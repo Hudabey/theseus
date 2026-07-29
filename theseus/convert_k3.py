@@ -49,6 +49,7 @@ if TYPE_CHECKING:
 from conversion.base import ModelBase, TextModel, gguf, logger  # noqa: E402
 from conversion.base import LazyTorchTensor                     # noqa: E402
 from conversion.qwen import QwenModel                           # noqa: E402
+from gguf.lazy import LazyNumpyTensor                           # noqa: E402
 
 from theseus.repack_mxfp4 import repack_hf_to_ggml              # noqa: E402
 
@@ -379,23 +380,42 @@ class KimiK3Model(TextModel):
         expert bytes: deepseek.py:624-649, gpt_oss.py:48-61.
         """
         assert self._experts_quant is not None
-        data: np.ndarray | None = None
+        # The stack is built LAZILY: the writer holds a meta tensor and the
+        # repack runs per-stack at write time, then frees. Building eagerly
+        # here would hand the writer 92 layers x 3 stacks x ~5.25 GB
+        # (~1.45 TB resident) before a single byte hits disk — the writer
+        # keeps every added tensor until write_tensors_to_file.
+        pairs: list[tuple[Tensor, Tensor]] = []
+        rows = row_halfbytes = 0
         for xid in range(n_experts):
             base = f"model.layers.{bid}.block_sparse_moe.experts.{xid}.{wid}"
-            blocks = LazyTorchTensor.to_eager(self._experts_quant[bid].pop(base + ".weight_packed"))
-            scales = LazyTorchTensor.to_eager(self._experts_quant[bid].pop(base + ".weight_scale"))
-            raw = repack_hf_to_ggml(
-                blocks.contiguous().view(torch.uint8).numpy(),
-                scales.contiguous().view(torch.uint8).numpy(),
-            )  # [rows, n_blocks*17]
-            if data is None:
-                data = np.empty((n_experts, *raw.shape), dtype=raw.dtype)
-            data[xid] = raw
-        assert data is not None
+            blocks = self._experts_quant[bid].pop(base + ".weight_packed")
+            scales = self._experts_quant[bid].pop(base + ".weight_scale")
+            if rows == 0:
+                rows, row_halfbytes = int(blocks.shape[0]), int(blocks.shape[1])
+            pairs.append((blocks, scales))
+        row_bytes = row_halfbytes // 16 * 17  # 16 packed bytes -> one 17-byte block_mxfp4
+        byte_shape = (n_experts, rows, row_bytes)
+
+        def build(pairs) -> np.ndarray:
+            data = np.empty(byte_shape, dtype=np.uint8)
+            for i, (b, s) in enumerate(pairs):
+                b = LazyTorchTensor.to_eager(b)
+                s = LazyTorchTensor.to_eager(s)
+                data[i] = repack_hf_to_ggml(
+                    b.contiguous().view(torch.uint8).numpy(),
+                    s.contiguous().view(torch.uint8).numpy(),
+                )
+            return data
+
+        lazy = LazyNumpyTensor(
+            meta=LazyNumpyTensor.meta_with_dtype_and_shape(np.uint8, byte_shape),
+            args=(pairs,), func=build,
+        )
         new_name = self.format_tensor_name(K3_EXPERT_TENSOR_KEYS[wid], bid)
-        shape = gguf.quant_shape_from_byte_shape(data.shape, gguf.GGMLQuantizationType.MXFP4)
-        logger.info(f"{new_name}: MXFP4 passthrough, logical shape = {shape}")
-        self.gguf_writer.add_tensor(new_name, data, raw_dtype=gguf.GGMLQuantizationType.MXFP4)
+        logical = gguf.quant_shape_from_byte_shape(byte_shape, gguf.GGMLQuantizationType.MXFP4)
+        logger.info(f"{new_name}: MXFP4 passthrough (lazy), logical shape = {logical}")
+        self.gguf_writer.add_tensor(new_name, lazy, raw_dtype=gguf.GGMLQuantizationType.MXFP4)
 
     def modify_tensors(self, data_torch: Tensor, name: str, bid: int | None) -> Iterable[tuple[str, Tensor]]:
         # VL wrapper: text tensors carry the language_model. prefix; vision is
