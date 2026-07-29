@@ -10,10 +10,13 @@ USAGE = f"""theseus {__version__} — run models too large for your machine
 commands:
   theseus inspect <org/repo>   architecture, true size, and can-my-hardware-run-it
   theseus verify  <org/repo>   checkpoint integrity oracle (no weight download)
+  theseus convert <model_dir>  Kimi K3 HF checkpoint -> GGUF, native MXFP4
+                               preserved byte-exactly (never requantized)
 
-Both read config + shard headers via HTTP Range requests: a 2.8T-parameter
-checkpoint is inspected in seconds with zero weight bytes downloaded.
-Set HF_TOKEN for gated repos.
+inspect/verify read config + shard headers via HTTP Range requests: a
+2.8T-parameter checkpoint is inspected in seconds with zero weight bytes
+downloaded. Set HF_TOKEN for gated repos. convert needs the checkpoint on
+disk and the [convert] extra: pip install "theseus-llm[convert]"
 """
 
 
@@ -29,6 +32,13 @@ def main() -> None:
     if cmd == "verify":
         from . import verify_cmd
         sys.exit(verify_cmd.main(rest))
+    if cmd == "convert":
+        try:
+            from . import convert_k3
+        except ImportError as e:
+            print(f"convert needs the conversion extras: pip install 'theseus-llm[convert]'\n({e})")
+            sys.exit(1)
+        sys.exit(convert_k3.main(rest))
     if cmd in ("--version", "version"):
         print(__version__)
         sys.exit(0)
