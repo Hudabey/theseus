@@ -178,11 +178,16 @@ class _FixtureModel(convert_k3.KimiK3Model):
     model_arch = gguf.MODEL_ARCH.KIMI_K3
 
     def set_vocab(self):
+        # byte-level stub: ids 0..127 are the gpt2 byte symbols for bytes
+        # 0..127, so any ASCII prompt tokenizes char-by-char (needed by the
+        # runtime fixture harness); no merges
+        from theseus._vendor.conversion.qwen import QwenModel
         self.gguf_writer.add_tokenizer_model("gpt2")
         self.gguf_writer.add_tokenizer_pre("kimi-k2")
-        self.gguf_writer.add_token_list([f"tok{i}" for i in range(VOCAB)])
+        self.gguf_writer.add_token_list(
+            [QwenModel.token_bytes_to_string(bytes([i])) for i in range(VOCAB)])
         self.gguf_writer.add_token_types([int(gguf.TokenType.NORMAL)] * VOCAB)
-        self.gguf_writer.add_token_merges(["t o"])
+        self.gguf_writer.add_token_merges([])
         self.gguf_writer.add_eos_token_id(2)
 
 
