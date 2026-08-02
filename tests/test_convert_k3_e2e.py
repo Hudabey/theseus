@@ -49,37 +49,44 @@ def _bf16(*shape):
     return (torch.randn(*shape) * 0.02).to(torch.bfloat16)
 
 
+def _norm_w(*shape):
+    # norm weights sit near 1.0 in real models; random ~0.02 weights crush
+    # activations twice over and leave logits at rounding-noise scale, making
+    # numerics comparison meaningless (parity harness requirement)
+    return (torch.ones(*shape) + torch.randn(*shape) * 0.05).to(torch.bfloat16)
+
+
 def build_checkpoint(dir_model: Path):
     """Returns {(bid, xid, wid): (blocks, scales)} for expert byte assertions."""
     t: dict[str, torch.Tensor] = {}
     expert_src = {}
 
-    t[P + "model.embed_tokens.weight"] = _bf16(VOCAB, H)
-    t[P + "model.norm.weight"] = _bf16(H)
+    t[P + "model.embed_tokens.weight"] = (torch.randn(VOCAB, H) * 0.3).to(torch.bfloat16)
+    t[P + "model.norm.weight"] = _norm_w(H)
     t[P + "model.output_attn_res_proj.weight"] = _bf16(1, H)
-    t[P + "model.output_attn_res_norm.weight"] = _bf16(H)
-    t[P + "lm_head.weight"] = _bf16(VOCAB, H)
+    t[P + "model.output_attn_res_norm.weight"] = _norm_w(H)
+    t[P + "lm_head.weight"] = (torch.randn(VOCAB, H) * 0.3).to(torch.bfloat16)
     # must be skipped by the converter:
     t["vision_tower.blocks.0.attn.qkv.weight"] = _bf16(8, 8)
     t["mm_projector.proj.weight"] = _bf16(8, 8)
 
     for i in range(LAYERS):
         L = f"{P}model.layers.{i}."
-        t[L + "input_layernorm.weight"] = _bf16(H)
-        t[L + "post_attention_layernorm.weight"] = _bf16(H)
+        t[L + "input_layernorm.weight"] = _norm_w(H)
+        t[L + "post_attention_layernorm.weight"] = _norm_w(H)
         t[L + "self_attention_res_proj.weight"] = _bf16(1, H)
-        t[L + "self_attention_res_norm.weight"] = _bf16(H)
+        t[L + "self_attention_res_norm.weight"] = _norm_w(H)
         t[L + "mlp_res_proj.weight"] = _bf16(1, H)
-        t[L + "mlp_res_norm.weight"] = _bf16(H)
+        t[L + "mlp_res_norm.weight"] = _norm_w(H)
         t[L + "self_attn.g_proj.weight"] = _bf16(KDA_DIM, H)
         t[L + "self_attn.o_proj.weight"] = _bf16(H, KDA_DIM)
 
         if (i + 1) in FULL_ATTN:  # MLA
             t[L + "self_attn.q_a_proj.weight"] = _bf16(Q_LORA, H)
-            t[L + "self_attn.q_a_layernorm.weight"] = _bf16(Q_LORA)
+            t[L + "self_attn.q_a_layernorm.weight"] = _norm_w(Q_LORA)
             t[L + "self_attn.q_b_proj.weight"] = _bf16(HEADS * (NOPE + ROPE), Q_LORA)
             t[L + "self_attn.kv_a_proj_with_mqa.weight"] = _bf16(KV_LORA + ROPE, H)
-            t[L + "self_attn.kv_a_layernorm.weight"] = _bf16(KV_LORA)
+            t[L + "self_attn.kv_a_layernorm.weight"] = _norm_w(KV_LORA)
             t[L + "self_attn.kv_b_proj.weight"] = _bf16(HEADS * (NOPE + V_HEAD), KV_LORA)
         else:  # KDA
             for p in ("q", "k", "v"):
@@ -90,7 +97,7 @@ def build_checkpoint(dir_model: Path):
             t[L + "self_attn.b_proj.weight"] = _bf16(HEADS, H)
             t[L + "self_attn.A_log"] = torch.rand(HEADS).to(torch.bfloat16) + 1.0
             t[L + "self_attn.dt_bias"] = _bf16(KDA_DIM)
-            t[L + "self_attn.o_norm.weight"] = _bf16(KDA_HEAD)
+            t[L + "self_attn.o_norm.weight"] = _norm_w(KDA_HEAD)
 
         if i == 0:  # dense MLP
             t[L + "mlp.gate_proj.weight"] = _bf16(DENSE_INT, H)
@@ -101,7 +108,7 @@ def build_checkpoint(dir_model: Path):
             t[B + "gate.weight"] = _bf16(E, H)
             t[B + "gate.e_score_correction_bias"] = torch.randn(E).float()
             t[B + "routed_expert_down_proj.weight"] = _bf16(LATENT, H)
-            t[B + "routed_expert_norm.weight"] = _bf16(LATENT)
+            t[B + "routed_expert_norm.weight"] = _norm_w(LATENT)
             t[B + "routed_expert_up_proj.weight"] = _bf16(H, LATENT)
             t[B + "shared_experts.gate_proj.weight"] = _bf16(SHARED_INT, H)
             t[B + "shared_experts.up_proj.weight"] = _bf16(SHARED_INT, H)
@@ -151,6 +158,7 @@ def build_checkpoint(dir_model: Path):
             "vocab_size": VOCAB,
             "max_position_embeddings": 512,
             "attn_res_block_size": 2,
+            "hidden_act": "situ",
             "activation_situ_beta": 4.0,
             "activation_situ_linear_beta": 25.0,
             "rms_norm_eps": 1e-5,
